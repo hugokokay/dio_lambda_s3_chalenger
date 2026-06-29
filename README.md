@@ -1,4 +1,4 @@
-# 🚀 Desafio DIO — Step Functions + S3 + Lambda
+# 🚀 Desafio DIO — Lambda + S3 + Lambda
 
 **Automação serverless para renomear arquivos no S3 com Data/Hora usando AWS Lambda e CloudFormation.**
 
