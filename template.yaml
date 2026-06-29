@@ -1,0 +1,125 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Laboratório DIO: Automação S3 e Lambda para renomear arquivos com Data/Hora.'
+
+Resources:
+  # 1. Bucket de Origem (Onde o arquivo é enviado)
+  SourceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      # Nome gerado automaticamente pelo CloudFormation (garante unicidade global)
+      VersioningConfiguration:
+        Status: Enabled
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Function: !GetAtt OrganizerFunction.Arn
+
+  # 2. Bucket de Destino (Onde o arquivo renomeado será salvo)
+  # Nome gerado automaticamente pelo CloudFormation (garante unicidade global)
+  DestBucket:
+    Type: AWS::S3::Bucket
+
+  # 3. IAM Role para a Lambda Function
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole # Permite logs no CloudWatch
+      Policies:
+        - PolicyName: S3ReadWriteAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource: '*'
+
+  # 4. Lambda Function
+  OrganizerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: 'dio-lab-organizer-function'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      # Usando Variáveis de Ambiente (Melhor prática em vez de hardcode)
+      Environment:
+        Variables:
+          DEST_BUCKET_NAME: !Ref DestBucket
+      Code:
+        ZipFile: |
+          import boto3
+          import urllib.parse
+          import os
+          from datetime import datetime
+
+          s3_client = boto3.client('s3')
+          # Pega o nome do bucket de destino da variável de ambiente
+          DEST_BUCKET = os.environ['DEST_BUCKET_NAME']
+
+          def lambda_handler(event, context):
+              # Extrai informações do evento disparado pelo S3
+              bucket_origem = event['Records'][0]['s3']['bucket']['name']
+              key_origem = urllib.parse.unquote_plus(
+                  event['Records'][0]['s3']['object']['key'], 
+                  encoding='utf-8'
+              )
+              
+              # Gera a data e hora atual formatada
+              agora = datetime.now()
+              data_hora = agora.strftime("%Y-%m-%d_%H-%M-%S")
+              
+              # Cria o novo nome do arquivo
+              if '.' in key_origem:
+                  nome, extensao = key_origem.rsplit('.', 1)
+                  novo_nome = f"{data_hora}_{nome}.{extensao}"
+              else:
+                  novo_nome = f"{data_hora}_{key_origem}"
+                  
+              try:
+                  # Copia o arquivo para o bucket de destino com o novo nome
+                  s3_client.copy_object(
+                      Bucket=DEST_BUCKET,
+                      CopySource={'Bucket': bucket_origem, 'Key': key_origem},
+                      Key=novo_nome
+                  )
+                  
+                  print(f"Sucesso! Arquivo copiado como: {novo_nome}")
+                  return {
+                      'statusCode': 200,
+                      'body': f"Arquivo processado: {novo_nome}"
+                  }
+              except Exception as e:
+                  print(f"Erro ao processar o arquivo: {str(e)}")
+                  raise e
+
+  # 5. Permissão para o S3 invocar a Lambda
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn: OrganizerFunction
+    Properties:
+      FunctionName: !Ref OrganizerFunction
+      Action: 'lambda:InvokeFunction'
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+Outputs:
+  SourceBucketName:
+    Description: 'Nome do Bucket de Origem'
+    Value: !Ref SourceBucket
+  DestBucketName:
+    Description: 'Nome do Bucket de Destino'
+    Value: !Ref DestBucket
+  LambdaFunctionName:
+    Description: 'Nome da Lambda Function'
+    Value: !Ref OrganizerFunction
